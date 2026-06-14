@@ -158,6 +158,42 @@ def get_over_expenses(year_month: str) -> List[dict]:
     return result
 
 
+def get_over_expenses_with_cumulative(year_month: str) -> List[dict]:
+    result = []
+    budgets = get_all_budgets(year_month)
+    totals = get_month_totals(year_month)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for cat in CATEGORIES:
+            budget = budgets.get(cat, 0)
+            spent = totals.get(cat, 0)
+            if budget > 0 and spent >= budget:
+                cursor.execute(
+                    "SELECT * FROM expenses WHERE category = ? AND strftime('%Y-%m', expense_date) = ? ORDER BY expense_date ASC, id ASC",
+                    (cat, year_month),
+                )
+                rows = cursor.fetchall()
+                cumulative = 0.0
+                over_start_idx = None
+                for idx, row in enumerate(rows):
+                    row_dict = dict(row)
+                    cumulative += row_dict["amount_base"]
+                    row_dict["cumulative"] = round(cumulative, 2)
+                    row_dict["budget"] = budget
+                    row_dict["over_amount"] = round(max(0, cumulative - budget), 2)
+                    if over_start_idx is None and cumulative > budget:
+                        over_start_idx = idx
+                    if over_start_idx is not None and idx >= over_start_idx:
+                        row_dict["is_over"] = True
+                        row_dict["over_sequence"] = idx - over_start_idx + 1
+                    else:
+                        row_dict["is_over"] = False
+                        row_dict["over_sequence"] = 0
+                    result.append(row_dict)
+    result.sort(key=lambda x: (x["category"], x["expense_date"], x["id"]), reverse=False)
+    return result
+
+
 def get_last_six_months() -> List[str]:
     today = date.today()
     months = []

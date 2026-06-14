@@ -1,3 +1,6 @@
+import hashlib
+from datetime import datetime
+
 from db import get_connection, BASE_CURRENCY
 
 CURRENCIES = {
@@ -45,6 +48,19 @@ def seed_exchange_rates():
         conn.commit()
 
 
+def _fluctuate_rate(base_rate: float, rate_date: str, currency: str) -> float:
+    if not rate_date or currency == BASE_CURRENCY:
+        return base_rate
+    try:
+        datetime.strptime(rate_date, "%Y-%m-%d")
+    except ValueError:
+        return base_rate
+    seed = f"{currency}-{rate_date}".encode("utf-8")
+    h = int(hashlib.md5(seed).hexdigest(), 16)
+    offset = ((h % 10000) / 10000.0 - 0.5) * 0.06  # ±3% 波动范围
+    return round(base_rate * (1 + offset), 6)
+
+
 def get_rate(currency: str, rate_date: str = None) -> float:
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -62,8 +78,10 @@ def get_rate(currency: str, rate_date: str = None) -> float:
         )
         row = cursor.fetchone()
         if row:
-            return row["rate_to_base"]
-        return DEFAULT_RATES.get(currency, 1.0)
+            base = row["rate_to_base"]
+            return _fluctuate_rate(base, rate_date, currency)
+        base = DEFAULT_RATES.get(currency, 1.0)
+        return _fluctuate_rate(base, rate_date, currency)
 
 
 def convert_to_base(amount: float, currency: str, rate_date: str = None) -> float:

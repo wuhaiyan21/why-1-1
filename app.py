@@ -10,7 +10,7 @@ from services import (
     get_month_totals,
     get_all_budgets,
     get_budget_warnings,
-    get_over_expenses,
+    get_over_expenses_with_cumulative,
     get_last_six_months,
     get_trend_data,
     check_and_clear_prev_month_budget,
@@ -80,11 +80,58 @@ with col2:
     st.plotly_chart(fig_line, use_container_width=True)
 
 st.subheader("🚨 超支分类明细")
-over_expenses = get_over_expenses(current_ym)
+over_expenses = get_over_expenses_with_cumulative(current_ym)
 if over_expenses:
     df_over = pd.DataFrame(over_expenses)
-    df_over = df_over[["expense_date", "category", "amount", "currency", "amount_base", "note"]]
-    df_over.columns = ["消费日期", "分类", "金额", "币种", f"本位币({BASE_CURRENCY})", "备注"]
-    st.dataframe(df_over, use_container_width=True, hide_index=True)
+    df_over["超支标记"] = df_over.apply(
+        lambda r: f"🔴 第{r['over_sequence']}笔超支 +{r['over_amount']:.2f}" if r["is_over"] else "",
+        axis=1,
+    )
+    df_over = df_over[
+        [
+            "category",
+            "expense_date",
+            "amount",
+            "currency",
+            "amount_base",
+            "cumulative",
+            "budget",
+            "over_amount",
+            "超支标记",
+            "note",
+        ]
+    ]
+    df_over.columns = [
+        "分类",
+        "消费日期",
+        "金额",
+        "币种",
+        f"本位币({BASE_CURRENCY})",
+        f"累计({BASE_CURRENCY})",
+        f"预算({BASE_CURRENCY})",
+        f"累计超支({BASE_CURRENCY})",
+        "超支说明",
+        "备注",
+    ]
+
+    def highlight_over(series):
+        return [
+            "background-color: #ffcccc; color: #8b0000; font-weight: bold"
+            if idx in df_over.index and over_expenses[i]["is_over"]
+            else ""
+            for i, idx in enumerate(series.index)
+        ]
+
+    styled_df = df_over.style.apply(highlight_over, axis=0)
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    over_cats = df_over[df_over["超支说明"] != ""]["分类"].unique()
+    for cat in over_cats:
+        cat_rows = df_over[(df_over["分类"] == cat) & (df_over["超支说明"] != "")]
+        if len(cat_rows) > 0:
+            first = cat_rows.iloc[0]
+            st.caption(
+                f"📌 【{cat}】从 {first['消费日期']} 开始超预算，累计超支 {first[f'累计超支({BASE_CURRENCY})']:.2f} {BASE_CURRENCY}，共 {len(cat_rows)} 笔超支记录（红色高亮行）。"
+            )
 else:
     st.success("本月暂无超支分类 🎉")
