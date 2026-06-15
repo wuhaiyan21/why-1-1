@@ -2,7 +2,7 @@ from datetime import datetime, date
 from typing import Optional, Tuple, List
 
 from db import get_connection, CATEGORIES
-from exchange_rates import convert_to_base
+from exchange_rates import convert_to_base, CURRENCIES
 
 
 def get_year_month(d: date) -> str:
@@ -264,3 +264,75 @@ def check_and_clear_prev_month_budget():
             (f"cleared_{prev_ym}", datetime.now().isoformat()),
         )
         conn.commit()
+
+
+def get_expense_by_id(expense_id: int) -> Optional[dict]:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM expenses WHERE id = ?", (expense_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def update_expense(
+    expense_id: int,
+    amount: float,
+    currency: str,
+    category: str,
+    expense_date: str,
+    note: Optional[str] = None,
+) -> Tuple[bool, str]:
+    existing = get_expense_by_id(expense_id)
+    if not existing:
+        return False, "记录不存在。"
+
+    amount_base = convert_to_base(amount, currency, expense_date)
+
+    old_ym = get_year_month(datetime.strptime(existing["expense_date"], "%Y-%m-%d").date())
+    new_ym = get_year_month(datetime.strptime(expense_date, "%Y-%m-%d").date())
+    affected_yms = set([old_ym, new_ym])
+    affected_cats = set([existing["category"], category])
+
+    for ym in affected_yms:
+        for cat in affected_cats:
+            budget = get_budget(cat, ym)
+            if budget > 0:
+                current_total = get_category_month_total(cat, ym)
+                new_total = current_total
+                if existing["expense_date"].startswith(ym) and existing["category"] == cat:
+                    new_total -= existing["amount_base"]
+                if expense_date.startswith(ym) and category == cat:
+                    new_total += amount_base
+                if new_total > budget:
+                    return False, f"修改后【{cat}】{ym} 分类将超预算（预算：{budget}，修改后消费：{new_total:.2f}），请先调高预算。"
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE expenses
+            SET amount = ?, currency = ?, amount_base = ?, category = ?, expense_date = ?, note = ?
+            WHERE id = ?
+            """,
+            (amount, currency, amount_base, category, expense_date, note, expense_id),
+        )
+        conn.commit()
+    return True, "修改成功。"
+
+
+def get_trend_data_by_category(months: List[str], categories: List[str]) -> dict:
+    data = {}
+    for cat in categories:
+        data[cat] = {m: 0.0 for m in months}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for ym in months:
+            cursor.execute(
+                "SELECT category, COALESCE(SUM(amount_base), 0) as total FROM expenses WHERE strftime('%Y-%m', expense_date) = ? AND category IN ({}) GROUP BY category".format(
+                    ",".join("?" * len(categories))
+                ),
+                (ym, *categories),
+            )
+            for row in cursor.fetchall():
+                data[row["category"]][ym] = row["total"]
+    return data
