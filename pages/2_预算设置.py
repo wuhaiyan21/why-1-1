@@ -54,7 +54,7 @@ with tab1:
 
 with tab2:
     st.subheader(f"从其他月份复制预算到 {target_ym}")
-    st.caption("💡 选择一个已有预算的月份，预览后一键复制到当前目标月。已存在的分类预算将被覆盖，没有预算记录的分类会补上新值。")
+    st.caption("💡 选择一个已有预算的月份，**必须先点预览**查看对照表，确认后再复制。已存在的分类预算将被覆盖（源月为 0 的分类不会覆盖目标月），没有预算记录的分类会补上新值。")
 
     today = date.today()
     available_months = []
@@ -82,57 +82,96 @@ with tab2:
         )
         source_ym = source_ym_labels.split("（")[0]
 
-        if "copy_confirmed" not in st.session_state:
-            st.session_state["copy_confirmed"] = False
+        if "copy_previewed_source" not in st.session_state:
+            st.session_state["copy_previewed_source"] = None
 
         col_preview, col_confirm = st.columns([1, 1])
         with col_preview:
             preview_clicked = st.button("👁️ 预览源月预算", use_container_width=True)
         with col_confirm:
-            confirm_clicked = st.button("✅ 确认并复制到 " + target_ym, type="primary", use_container_width=True)
+            has_previewed = st.session_state.get("copy_previewed_source") == source_ym
+            confirm_clicked = st.button(
+                "✅ 确认并复制到 " + target_ym,
+                type="primary",
+                use_container_width=True,
+                disabled=not has_previewed,
+                help="请先点击左侧「预览源月预算」查看对照表后再确认复制。"
+            )
 
-        if preview_clicked or st.session_state.get("copy_show_preview", False):
-            st.session_state["copy_show_preview"] = True
+        if not has_previewed:
+            st.caption("ℹ️ 请先点击「预览源月预算」查看各分类复制对照表。")
+
+        if preview_clicked or has_previewed:
+            if preview_clicked:
+                st.session_state["copy_previewed_source"] = source_ym
+                st.session_state["copy_show_preview"] = True
+                st.rerun()
             src_budgets = get_all_budgets(source_ym)
             cur_budgets = get_all_budgets(target_ym)
 
             preview_rows = []
+            will_change = 0
             for cat in CATEGORIES:
                 src_val = src_budgets.get(cat, 0)
                 cur_val = cur_budgets.get(cat, 0)
-                action = "新增" if cur_val == 0 and src_val > 0 else ("覆盖" if src_val != cur_val and src_val > 0 else ("保留" if cur_val == src_val else "无变更"))
+                if src_val == 0 and cur_val > 0:
+                    action = "保留（源月为0）"
+                    after_val = cur_val
+                elif src_val > 0 and cur_val == 0:
+                    action = "新增"
+                    after_val = src_val
+                    will_change += 1
+                elif src_val > 0 and src_val != cur_val:
+                    action = "覆盖"
+                    after_val = src_val
+                    will_change += 1
+                elif src_val > 0 and src_val == cur_val:
+                    action = "已一致"
+                    after_val = src_val
+                else:
+                    action = "无变更"
+                    after_val = cur_val
                 preview_rows.append({
                     "分类": cat,
                     f"源月({source_ym})": src_val,
                     f"目标月({target_ym})": cur_val,
-                    f"复制后({target_ym})": src_val,
+                    f"复制后({target_ym})": after_val,
                     "操作": action,
                 })
             df_preview = pd.DataFrame(preview_rows)
-            src_total = sum(r[f"源月({source_ym})"] for r in preview_rows)
+            src_total_positive = sum(max(src_budgets.get(cat, 0), 0) for cat in CATEGORIES)
             cur_total = sum(r[f"目标月({target_ym})"] for r in preview_rows)
+            after_total = sum(r[f"复制后({target_ym})"] for r in preview_rows)
 
             st.markdown("### 📊 复制预览")
-            st.warning(f"⚠️ 确认后，目标月 {target_ym} 的分类预算将被源月 {source_ym} 的值**完全覆盖**（源月为 0 的分类也会覆盖目标月的值）。")
+            if will_change > 0:
+                st.warning(f"⚠️ 确认后，将有 **{will_change}** 个分类预算变更（新增或覆盖）。源月为 0 的分类不会修改目标月已有值。")
+            else:
+                st.info("ℹ️ 所有分类已一致或源月为 0 无需修改，无需复制。")
 
             def highlight(row):
                 if row["操作"] in ["覆盖", "新增"]:
                     return ["background-color: #fff3cd; font-weight: bold"] * len(row)
+                if row["操作"] == "保留（源月为0）":
+                    return ["background-color: #e3f2fd; color: #0d47a1"] * len(row)
                 return [""] * len(row)
 
             styled_preview = df_preview.style.apply(highlight, axis=1)
             st.dataframe(styled_preview, use_container_width=True, hide_index=True)
 
-            st.info(f"📌 源月合计：{src_total:.2f} {BASE_CURRENCY}，目标月当前合计：{cur_total:.2f} {BASE_CURRENCY}，复制后目标月合计：{src_total:.2f} {BASE_CURRENCY}")
+            st.info(f"📌 源月有效预算合计（非0）：{src_total_positive:.2f} {BASE_CURRENCY}，目标月当前合计：{cur_total:.2f} {BASE_CURRENCY}，复制后目标月合计：{after_total:.2f} {BASE_CURRENCY}")
 
-        if confirm_clicked:
+        if confirm_clicked and has_previewed:
             src_budgets = get_all_budgets(source_ym)
-            overwrite_count = 0
-            new_count = 0
+            cur_budgets = get_all_budgets(target_ym)
+            changed_count = 0
             for cat in CATEGORIES:
                 src_val = src_budgets.get(cat, 0)
-                set_budget(cat, target_ym, src_val)
-                old_val = get_all_budgets(target_ym)
-            st.success(f"✅ 已成功从 {source_ym} 复制预算到 {target_ym}！所有 {len(CATEGORIES)} 个分类预算已更新。")
+                cur_val = cur_budgets.get(cat, 0)
+                if src_val > 0 and src_val != cur_val:
+                    set_budget(cat, target_ym, src_val)
+                    changed_count += 1
+            st.success(f"✅ 已成功从 {source_ym} 复制预算到 {target_ym}！共更新 {changed_count} 个分类。")
+            st.session_state["copy_previewed_source"] = None
             st.session_state["copy_show_preview"] = False
             st.rerun()

@@ -1,6 +1,8 @@
 from datetime import datetime, date
 from typing import Optional, Tuple, List
 
+import streamlit as st
+
 from db import get_connection, CATEGORIES
 from exchange_rates import convert_to_base, CURRENCIES
 
@@ -58,9 +60,11 @@ def add_expense(
             ),
         )
         conn.commit()
+    st.cache_data.clear()
     return True, "录入成功。"
 
 
+@st.cache_data(ttl=60)
 def get_budget(category: str, year_month: str) -> float:
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -84,8 +88,10 @@ def set_budget(category: str, year_month: str, amount: float):
             (category, year_month, amount),
         )
         conn.commit()
+    st.cache_data.clear()
 
 
+@st.cache_data(ttl=60)
 def get_all_budgets(year_month: str) -> dict:
     result = {c: 0.0 for c in CATEGORIES}
     with get_connection() as conn:
@@ -99,6 +105,7 @@ def get_all_budgets(year_month: str) -> dict:
     return result
 
 
+@st.cache_data(ttl=60)
 def get_category_month_total(category: str, year_month: str) -> float:
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -110,6 +117,7 @@ def get_category_month_total(category: str, year_month: str) -> float:
         return row["total"] if row else 0.0
 
 
+@st.cache_data(ttl=60)
 def get_month_totals(year_month: str) -> dict:
     result = {c: 0.0 for c in CATEGORIES}
     with get_connection() as conn:
@@ -123,6 +131,7 @@ def get_month_totals(year_month: str) -> dict:
     return result
 
 
+@st.cache_data(ttl=60)
 def get_budget_warnings(year_month: str) -> List[dict]:
     warnings = []
     budgets = get_all_budgets(year_month)
@@ -139,6 +148,7 @@ def get_budget_warnings(year_month: str) -> List[dict]:
     return warnings
 
 
+@st.cache_data(ttl=60)
 def get_over_expenses(year_month: str) -> List[dict]:
     result = []
     budgets = get_all_budgets(year_month)
@@ -158,6 +168,7 @@ def get_over_expenses(year_month: str) -> List[dict]:
     return result
 
 
+@st.cache_data(ttl=60)
 def get_over_expenses_with_cumulative(year_month: str) -> List[dict]:
     result = []
     budgets = get_all_budgets(year_month)
@@ -194,6 +205,7 @@ def get_over_expenses_with_cumulative(year_month: str) -> List[dict]:
     return result
 
 
+@st.cache_data(ttl=60)
 def get_last_six_months() -> List[str]:
     today = date.today()
     months = []
@@ -208,6 +220,7 @@ def get_last_six_months() -> List[str]:
     return months
 
 
+@st.cache_data(ttl=60)
 def get_trend_data(months: List[str]) -> dict:
     data = {m: 0.0 for m in months}
     with get_connection() as conn:
@@ -222,6 +235,7 @@ def get_trend_data(months: List[str]) -> dict:
     return data
 
 
+@st.cache_data(ttl=60)
 def get_all_expenses(start_date: str = None, end_date: str = None, category: str = None) -> List[dict]:
     query = "SELECT * FROM expenses WHERE 1=1"
     params = []
@@ -266,6 +280,7 @@ def check_and_clear_prev_month_budget():
         conn.commit()
 
 
+@st.cache_data(ttl=60)
 def get_expense_by_id(expense_id: int) -> Optional[dict]:
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -317,9 +332,11 @@ def update_expense(
             (amount, currency, amount_base, category, expense_date, note, expense_id),
         )
         conn.commit()
+    st.cache_data.clear()
     return True, "修改成功。"
 
 
+@st.cache_data(ttl=60)
 def get_trend_data_by_category(months: List[str], categories: List[str]) -> dict:
     data = {}
     for cat in categories:
