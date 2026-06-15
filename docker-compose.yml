@@ -9,3 +9,12 @@ services:
     volumes:
       - .:/app
     restart: unless-stopped
+
+  yearly-summary:
+    build: .
+    container_name: yearly-summary
+    entrypoint: ["python", "yearly_summary.py"]
+    command: ["--year", "2025", "--format", "csv", "--db", "/app/data/expenses.db", "--output-dir", "/app/output"]
+    volumes:
+      - .:/app
+    profiles: ["tools"]
