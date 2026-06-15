@@ -4,9 +4,8 @@ import csv
 import os
 import sqlite3
 import sys
-from calendar import monthrange
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import datetime
 
 CATEGORIES = ["餐饮", "交通", "娱乐", "住房", "其他"]
 
@@ -81,9 +80,11 @@ def query_monthly_expenses(conn, months):
 
 def query_monthly_budgets(conn, months):
     result = {}
-    warnings = []
+    recorded_months = set()
+    missing_details = {}
     for ym in months:
         result[ym] = {c: 0.0 for c in CATEGORIES}
+        missing_details[ym] = set(CATEGORIES)
     cursor = conn.cursor()
     placeholders = ",".join("?" * len(months))
     cursor.execute(
@@ -92,19 +93,22 @@ def query_monthly_budgets(conn, months):
         f"WHERE year_month IN ({placeholders})",
         months,
     )
-    budgeted_months = set()
     for row in cursor.fetchall():
         cat = row["category"]
         ym = row["year_month"]
         if ym in result:
-            budgeted_months.add(ym)
+            recorded_months.add(ym)
             if cat in CATEGORIES:
                 result[ym][cat] = row["amount"]
+                missing_details[ym].discard(cat)
+    warnings = []
     for ym in months:
-        total_budget = sum(result[ym].values())
-        if total_budget == 0:
-            warnings.append(ym)
-    return result, warnings
+        if ym not in recorded_months:
+            warnings.append((ym, "全部", sorted(CATEGORIES)))
+        else:
+            if missing_details[ym]:
+                warnings.append((ym, "部分", sorted(missing_details[ym])))
+    return result, warnings, recorded_months
 
 
 def build_category_rows(months, expenses, budgets):
@@ -118,17 +122,20 @@ def build_category_rows(months, expenses, budgets):
     return rows
 
 
-def build_summary_rows(months, expenses, budgets):
+def build_summary_rows(months, expenses, budgets, recorded_months):
     rows = []
     for ym in months:
         total_expense = sum(expenses[ym].values())
         total_budget = sum(budgets[ym].values())
-        execution_rate = (total_expense / total_budget * 100) if total_budget > 0 else 0.0
+        if ym not in recorded_months:
+            execution_rate = "-"
+        else:
+            execution_rate = round((total_expense / total_budget * 100), 2) if total_budget > 0 else 0.0
         rows.append({
             "月份": ym,
             "总支出": round(total_expense, 2),
             "总预算": round(total_budget, 2),
-            "执行率(%)": round(execution_rate, 2),
+            "执行率(%)": execution_rate,
         })
     return rows
 
@@ -136,12 +143,13 @@ def build_summary_rows(months, expenses, budgets):
 def find_overexpense_months(summary_rows):
     over = []
     for r in summary_rows:
-        if r["总预算"] > 0 and r["总支出"] > r["总预算"]:
+        total_budget = r["总预算"]
+        if isinstance(r["执行率(%)"], (int, float)) and total_budget > 0 and r["总支出"] > total_budget:
             over.append({
                 "月份": r["月份"],
-                "超支金额": round(r["总支出"] - r["总预算"], 2),
+                "超支金额": round(r["总支出"] - total_budget, 2),
                 "总支出": r["总支出"],
-                "总预算": r["总预算"],
+                "总预算": total_budget,
             })
     over.sort(key=lambda x: (-x["超支金额"], x["月份"]))
     return over
@@ -163,16 +171,21 @@ def markdown_table(rows, fieldnames):
     return "\n".join(lines)
 
 
-def write_markdown(path, category_rows, summary_rows, over_months, category_fields, summary_fields):
+def write_category_markdown(path, category_rows, category_fields):
     parts = []
-    parts.append("# 年度开支汇总报告\n")
-    parts.append("## 一、各月各分类支出与预算\n")
+    parts.append("# 各月各分类支出与预算\n")
     parts.append(markdown_table(category_rows, category_fields))
     parts.append("")
-    parts.append("## 二、各月总支出、总预算与执行率\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts))
+
+
+def write_summary_markdown(path, summary_rows, over_months, summary_fields):
+    parts = []
+    parts.append("# 各月总支出、总预算与执行率\n")
     parts.append(markdown_table(summary_rows, summary_fields))
     parts.append("")
-    parts.append("## 三、超支月份清单\n")
+    parts.append("## 超支月份清单\n")
     if over_months:
         over_fields = ["月份", "总支出", "总预算", "超支金额"]
         over_table_rows = []
@@ -263,13 +276,19 @@ def main():
 
     with get_connection(db_path) as conn:
         expenses = query_monthly_expenses(conn, months)
-        budgets, missing_budget_months = query_monthly_budgets(conn, months)
+        budgets, budget_warnings, recorded_months = query_monthly_budgets(conn, months)
 
-    for ym in missing_budget_months:
-        print(f"警告：月份 {ym} 缺少预算记录，预算列按 0 处理。", file=sys.stderr)
+    for ym, scope, missing_cats in budget_warnings:
+        if scope == "全部":
+            print(f"警告：月份 {ym} 缺少所有分类的预算记录，预算列按 0 处理。", file=sys.stderr)
+        else:
+            print(
+                f"警告：月份 {ym} 缺少分类预算记录（{'、'.join(missing_cats)}），对应分类预算列按 0 处理。",
+                file=sys.stderr,
+            )
 
     category_rows = build_category_rows(months, expenses, budgets)
-    summary_rows = build_summary_rows(months, expenses, budgets)
+    summary_rows = build_summary_rows(months, expenses, budgets, recorded_months)
 
     category_fields = ["月份"]
     for cat in CATEGORIES:
@@ -288,8 +307,8 @@ def main():
         over_months = find_overexpense_months(summary_rows)
         cat_path = os.path.join(output_dir, "monthly_category_summary.md")
         sum_path = os.path.join(output_dir, "monthly_total_summary.md")
-        write_markdown(cat_path, category_rows, summary_rows, over_months, category_fields, summary_fields)
-        write_markdown(sum_path, category_rows, summary_rows, over_months, category_fields, summary_fields)
+        write_category_markdown(cat_path, category_rows, category_fields)
+        write_summary_markdown(sum_path, summary_rows, over_months, summary_fields)
         print(f"已生成：{cat_path}")
         print(f"已生成：{sum_path}")
 

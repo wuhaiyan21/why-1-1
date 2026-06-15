@@ -17,4 +17,3 @@ services:
     command: ["--year", "2025", "--format", "csv", "--db", "/app/data/expenses.db", "--output-dir", "/app/output"]
     volumes:
       - .:/app
-    profiles: ["tools"]
