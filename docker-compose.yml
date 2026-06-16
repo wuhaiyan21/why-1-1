@@ -8,6 +8,10 @@ services:
       - "8501:8501"
     volumes:
       - .:/app
+      - ./data:/app/data
+      - ./output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
 
   yearly-summary:
@@ -17,3 +21,7 @@ services:
     command: ["--year", "2025", "--format", "csv", "--db", "/app/data/expenses.db", "--output-dir", "/app/output"]
     volumes:
       - .:/app
+      - ./data:/app/data
+      - ./output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1

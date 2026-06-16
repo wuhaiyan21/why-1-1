@@ -1,5 +1,7 @@
 from datetime import datetime, date
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
+import csv
+import io
 
 import streamlit as st
 
@@ -353,3 +355,206 @@ def get_trend_data_by_category(months: List[str], categories: List[str]) -> dict
             for row in cursor.fetchall():
                 data[row["category"]][ym] = row["total"]
     return data
+
+
+def generate_month_range(start_ym: str, end_ym: str) -> List[str]:
+    start = datetime.strptime(start_ym, "%Y-%m")
+    end = datetime.strptime(end_ym, "%Y-%m")
+    months = []
+    current = start
+    while current <= end:
+        months.append(current.strftime("%Y-%m"))
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+    return months
+
+
+def validate_year_or_range(year: Optional[str] = None, start_ym: Optional[str] = None, end_ym: Optional[str] = None) -> Tuple[bool, str, Optional[str], Optional[str]]:
+    if year:
+        s = f"{year}-01"
+        e = f"{year}-12"
+        try:
+            datetime.strptime(s, "%Y-%m")
+            datetime.strptime(e, "%Y-%m")
+        except ValueError:
+            return False, "年份格式错误", None, None
+        return True, "", s, e
+    else:
+        if not start_ym or not end_ym:
+            return False, "必须指定年份，或同时指定起始月份与结束月份", None, None
+        try:
+            datetime.strptime(start_ym, "%Y-%m")
+            datetime.strptime(end_ym, "%Y-%m")
+        except ValueError:
+            return False, "月份格式必须为 YYYY-MM，例如 2025-01", None, None
+        if start_ym > end_ym:
+            return False, f"起始月份 {start_ym} 不能晚于结束月份 {end_ym}", None, None
+        return True, "", start_ym, end_ym
+
+
+@st.cache_data(ttl=60)
+def query_monthly_expenses_for_range(months: List[str]) -> Dict[str, Dict[str, float]]:
+    result = {}
+    for ym in months:
+        result[ym] = {c: 0.0 for c in CATEGORIES}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(months))
+        cursor.execute(
+            f"SELECT category, strftime('%Y-%m', expense_date) as ym, "
+            f"COALESCE(SUM(amount_base), 0) as total "
+            f"FROM expenses "
+            f"WHERE strftime('%Y-%m', expense_date) IN ({placeholders}) "
+            f"GROUP BY category, ym",
+            months,
+        )
+        for row in cursor.fetchall():
+            cat = row["category"]
+            ym = row["ym"]
+            if cat in CATEGORIES and ym in result:
+                result[ym][cat] = row["total"]
+    return result
+
+
+@st.cache_data(ttl=60)
+def query_monthly_budgets_for_range(months: List[str]) -> Tuple[Dict[str, Dict[str, float]], List[Dict[str, Any]], set]:
+    result = {}
+    recorded_months = set()
+    missing_details = {}
+    for ym in months:
+        result[ym] = {c: 0.0 for c in CATEGORIES}
+        missing_details[ym] = set(CATEGORIES)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(months))
+        cursor.execute(
+            f"SELECT category, year_month, amount "
+            f"FROM budgets "
+            f"WHERE year_month IN ({placeholders})",
+            months,
+        )
+        for row in cursor.fetchall():
+            cat = row["category"]
+            ym = row["year_month"]
+            if ym in result:
+                recorded_months.add(ym)
+                if cat in CATEGORIES:
+                    result[ym][cat] = row["amount"]
+                    missing_details[ym].discard(cat)
+    warnings = []
+    for ym in months:
+        if ym not in recorded_months:
+            warnings.append({"month": ym, "scope": "全部", "missing_categories": sorted(CATEGORIES)})
+        else:
+            if missing_details[ym]:
+                warnings.append({"month": ym, "scope": "部分", "missing_categories": sorted(missing_details[ym])})
+    return result, warnings, recorded_months
+
+
+def build_category_rows(months: List[str], expenses: Dict[str, Dict[str, float]], budgets: Dict[str, Dict[str, float]]) -> List[Dict[str, Any]]:
+    rows = []
+    for ym in months:
+        row = {"月份": ym}
+        for cat in CATEGORIES:
+            row[f"{cat}_实际"] = round(expenses[ym][cat], 2)
+            row[f"{cat}_预算"] = round(budgets[ym][cat], 2)
+        rows.append(row)
+    return rows
+
+
+def build_summary_rows(months: List[str], expenses: Dict[str, Dict[str, float]], budgets: Dict[str, Dict[str, float]], recorded_months: set) -> List[Dict[str, Any]]:
+    rows = []
+    for ym in months:
+        total_expense = sum(expenses[ym].values())
+        total_budget = sum(budgets[ym].values())
+        if ym not in recorded_months:
+            execution_rate = "-"
+        else:
+            execution_rate = round((total_expense / total_budget * 100), 2) if total_budget > 0 else 0.0
+        rows.append({
+            "月份": ym,
+            "总支出": round(total_expense, 2),
+            "总预算": round(total_budget, 2),
+            "执行率(%)": execution_rate,
+        })
+    return rows
+
+
+def find_overexpense_months(summary_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    over = []
+    for r in summary_rows:
+        total_budget = r["总预算"]
+        if isinstance(r["执行率(%)"], (int, float)) and total_budget > 0 and r["总支出"] > total_budget:
+            over.append({
+                "月份": r["月份"],
+                "超支金额": round(r["总支出"] - total_budget, 2),
+                "总支出": r["总支出"],
+                "总预算": total_budget,
+            })
+    over.sort(key=lambda x: (-x["超支金额"], x["月份"]))
+    return over
+
+
+def get_category_fields() -> List[str]:
+    fields = ["月份"]
+    for cat in CATEGORIES:
+        fields.append(f"{cat}_实际")
+        fields.append(f"{cat}_预算")
+    return fields
+
+
+def get_summary_fields() -> List[str]:
+    return ["月份", "总支出", "总预算", "执行率(%)"]
+
+
+def get_overexpense_fields() -> List[str]:
+    return ["月份", "总支出", "总预算", "超支金额"]
+
+
+def write_csv_to_string(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def get_yearly_summary_data(year: Optional[str] = None, start_ym: Optional[str] = None, end_ym: Optional[str] = None) -> Dict[str, Any]:
+    ok, msg, s, e = validate_year_or_range(year, start_ym, end_ym)
+    if not ok:
+        return {"success": False, "error": msg}
+    months = generate_month_range(s, e)
+    expenses = query_monthly_expenses_for_range(months)
+    budgets, budget_warnings, recorded_months = query_monthly_budgets_for_range(months)
+    category_rows = build_category_rows(months, expenses, budgets)
+    summary_rows = build_summary_rows(months, expenses, budgets, recorded_months)
+    overexpense_months = find_overexpense_months(summary_rows)
+
+    warning_messages = []
+    for w in budget_warnings:
+        if w["scope"] == "全部":
+            warning_messages.append(f"月份 {w['month']} 缺少所有分类的预算记录，预算列按 0 处理。")
+        else:
+            warning_messages.append(f"月份 {w['month']} 缺少分类预算记录（{'、'.join(w['missing_categories'])}），对应分类预算列按 0 处理。")
+
+    category_fields = get_category_fields()
+    summary_fields = get_summary_fields()
+    category_csv = write_csv_to_string(category_rows, category_fields)
+    summary_csv = write_csv_to_string(summary_rows, summary_fields)
+
+    return {
+        "success": True,
+        "start_ym": s,
+        "end_ym": e,
+        "months": months,
+        "category_rows": category_rows,
+        "summary_rows": summary_rows,
+        "overexpense_months": overexpense_months,
+        "warning_messages": warning_messages,
+        "category_fields": category_fields,
+        "summary_fields": summary_fields,
+        "category_csv": category_csv,
+        "summary_csv": summary_csv,
+    }
