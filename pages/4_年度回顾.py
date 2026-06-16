@@ -14,6 +14,17 @@ st.set_page_config(page_title="年度回顾", page_icon="📅", layout="wide")
 init_db()
 seed_exchange_rates()
 
+PAGE_MARKER = "yearly_review_page"
+query_params = st.query_params
+if query_params.get("_page", "") != PAGE_MARKER:
+    for k in ["current_summary_result", "queried_param_fingerprint", "current_query_mode",
+              "current_year_val", "current_start_ym", "current_end_ym", "_last_mode",
+              "query_mode", "year_input", "start_year_input", "start_month_input",
+              "end_year_input", "end_month_input"]:
+        st.session_state.pop(k, None)
+    st.query_params["_page"] = PAGE_MARKER
+    st.rerun()
+
 st.title("📅 年度回顾")
 
 today = date.today()
@@ -28,39 +39,45 @@ mode = st.radio(
     key="query_mode"
 )
 
-last_mode = st.session_state.get("_last_mode", mode)
-if mode != last_mode:
-    for k in ["current_summary_result", "current_query_mode", "current_year_val", "current_start_ym", "current_end_ym"]:
-        st.session_state.pop(k, None)
-    st.session_state["_last_mode"] = mode
-    st.rerun()
-
 year_val = None
 start_ym_val = None
 end_ym_val = None
 
-with st.form("yearly_query_form"):
-    if mode == "完整年份":
-        year_val = str(st.number_input("选择年份", min_value=2000, max_value=2100, value=current_year, step=1, key="year_input"))
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            default_start_year = current_year
-            default_start_month = 1
-            start_year = st.number_input("起始年份", min_value=2000, max_value=2100, value=default_start_year, key="start_year_input")
-            start_month = st.number_input("起始月份", min_value=1, max_value=12, value=default_start_month, key="start_month_input")
-            start_ym_val = f"{int(start_year):04d}-{int(start_month):02d}"
-        with col2:
-            default_end_year = current_year
-            default_end_month = today.month
-            end_year = st.number_input("结束年份", min_value=2000, max_value=2100, value=default_end_year, key="end_year_input")
-            end_month = st.number_input("结束月份", min_value=1, max_value=12, value=default_end_month, key="end_month_input")
-            end_ym_val = f"{int(end_year):04d}-{int(end_month):02d}"
+if mode == "完整年份":
+    year_val = str(st.number_input("选择年份", min_value=2000, max_value=2100, value=current_year, step=1, key="year_input"))
+else:
+    col1, col2 = st.columns(2)
+    with col1:
+        default_start_year = current_year
+        default_start_month = 1
+        start_year = st.number_input("起始年份", min_value=2000, max_value=2100, value=default_start_year, key="start_year_input")
+        start_month = st.number_input("起始月份", min_value=1, max_value=12, value=default_start_month, key="start_month_input")
+        start_ym_val = f"{int(start_year):04d}-{int(start_month):02d}"
+    with col2:
+        default_end_year = current_year
+        default_end_month = today.month
+        end_year = st.number_input("结束年份", min_value=2000, max_value=2100, value=default_end_year, key="end_year_input")
+        end_month = st.number_input("结束月份", min_value=1, max_value=12, value=default_end_month, key="end_month_input")
+        end_ym_val = f"{int(end_year):04d}-{int(end_month):02d}"
 
+if mode == "完整年份":
+    current_param_fingerprint = f"Y|{year_val}"
+else:
+    current_param_fingerprint = f"R|{start_ym_val}|{end_ym_val}"
+
+queried_fingerprint = st.session_state.get("queried_param_fingerprint", "")
+if queried_fingerprint and queried_fingerprint != current_param_fingerprint:
+    for k in ["current_summary_result", "queried_param_fingerprint", "current_query_mode",
+              "current_year_val", "current_start_ym", "current_end_ym"]:
+        st.session_state.pop(k, None)
+    st.rerun()
+
+with st.form("yearly_query_form"):
     query_clicked = st.form_submit_button("🔍 查询", type="primary", use_container_width=True)
 
     if query_clicked:
-        for k in ["current_summary_result", "current_query_mode", "current_year_val", "current_start_ym", "current_end_ym"]:
+        for k in ["current_summary_result", "queried_param_fingerprint", "current_query_mode",
+                  "current_year_val", "current_start_ym", "current_end_ym"]:
             st.session_state.pop(k, None)
 
         if mode == "指定月份区间" and start_ym_val > end_ym_val:
@@ -76,6 +93,7 @@ with st.form("yearly_query_form"):
             st.error(f"❌ {result.get('error', '查询失败')}")
         else:
             st.session_state["current_summary_result"] = result
+            st.session_state["queried_param_fingerprint"] = current_param_fingerprint
             st.session_state["current_query_mode"] = mode
             st.session_state["current_year_val"] = year_val
             st.session_state["current_start_ym"] = start_ym_val
@@ -91,34 +109,20 @@ if has_result:
     display_start = st.session_state["current_start_ym"]
     display_end = st.session_state["current_end_ym"]
 
-    if mode == "完整年份":
-        current_input_params = {"mode": mode, "year": year_val}
-        queried_params = {"mode": display_mode, "year": display_year}
-        params_match = (mode == display_mode) and (year_val == display_year)
-        current_params_desc = f"{mode} {year_val}"
+    if display_mode == "完整年份":
         queried_params_desc = f"{display_mode} {display_year}"
     else:
-        current_input_params = {"mode": mode, "start": start_ym_val, "end": end_ym_val}
-        queried_params = {"mode": display_mode, "start": display_start, "end": display_end}
-        params_match = (mode == display_mode) and (start_ym_val == display_start) and (end_ym_val == display_end)
-        current_params_desc = f"{mode} {start_ym_val} ~ {end_ym_val}"
         queried_params_desc = f"{display_mode} {display_start} ~ {display_end}"
 
-    status_container = st.container()
-    with status_container:
-        if not params_match:
-            st.warning(
-                f"⚠️ **当前输入参数**：{current_params_desc}　|　"
-                f"**当前展示数据参数**：{queried_params_desc}　|　"
-                f"两者不一致，请点击「查询」按钮刷新数据。"
-            )
-        else:
-            st.success(f"✅ 查询成功：{result['start_ym']} 至 {result['end_ym']}，共 {len(result['months'])} 个月")
-
-    if st.button("🗑️ 清除当前查询结果", use_container_width=False, key="clear_result_btn"):
-        for k in ["current_summary_result", "current_query_mode", "current_year_val", "current_start_ym", "current_end_ym"]:
-            st.session_state.pop(k, None)
-        st.rerun()
+    status_cols = st.columns([3, 1])
+    with status_cols[0]:
+        st.success(f"✅ 查询成功：{result['start_ym']} 至 {result['end_ym']}，共 {len(result['months'])} 个月")
+    with status_cols[1]:
+        if st.button("🗑️ 清除结果", use_container_width=True, key="clear_result_btn"):
+            for k in ["current_summary_result", "queried_param_fingerprint", "current_query_mode",
+                      "current_year_val", "current_start_ym", "current_end_ym"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
     if result["warning_messages"]:
         st.subheader("⚠️ 预算记录警告")
