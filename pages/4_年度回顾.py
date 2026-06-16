@@ -24,51 +24,101 @@ mode = st.radio(
     "查询模式",
     ["完整年份", "指定月份区间"],
     horizontal=True,
-    help="选择「完整年份」查看全年数据，或选择「指定月份区间」自定义起止月份"
+    help="选择「完整年份」查看全年数据，或选择「指定月份区间」自定义起止月份",
+    key="query_mode"
 )
+
+last_mode = st.session_state.get("_last_mode", mode)
+if mode != last_mode:
+    for k in ["current_summary_result", "current_query_mode", "current_year_val", "current_start_ym", "current_end_ym"]:
+        st.session_state.pop(k, None)
+    st.session_state["_last_mode"] = mode
+    st.rerun()
 
 year_val = None
 start_ym_val = None
 end_ym_val = None
 
-if mode == "完整年份":
-    year_val = str(st.number_input("选择年份", min_value=2000, max_value=2100, value=current_year, step=1))
-else:
-    col1, col2 = st.columns(2)
-    with col1:
-        default_start_year = current_year
-        default_start_month = 1
-        start_year = st.number_input("起始年份", min_value=2000, max_value=2100, value=default_start_year, key="start_year")
-        start_month = st.number_input("起始月份", min_value=1, max_value=12, value=default_start_month, key="start_month")
-        start_ym_val = f"{int(start_year):04d}-{int(start_month):02d}"
-    with col2:
-        default_end_year = current_year
-        default_end_month = today.month
-        end_year = st.number_input("结束年份", min_value=2000, max_value=2100, value=default_end_year, key="end_year")
-        end_month = st.number_input("结束月份", min_value=1, max_value=12, value=default_end_month, key="end_month")
-        end_ym_val = f"{int(end_year):04d}-{int(end_month):02d}"
+with st.form("yearly_query_form"):
+    if mode == "完整年份":
+        year_val = str(st.number_input("选择年份", min_value=2000, max_value=2100, value=current_year, step=1, key="year_input"))
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            default_start_year = current_year
+            default_start_month = 1
+            start_year = st.number_input("起始年份", min_value=2000, max_value=2100, value=default_start_year, key="start_year_input")
+            start_month = st.number_input("起始月份", min_value=1, max_value=12, value=default_start_month, key="start_month_input")
+            start_ym_val = f"{int(start_year):04d}-{int(start_month):02d}"
+        with col2:
+            default_end_year = current_year
+            default_end_month = today.month
+            end_year = st.number_input("结束年份", min_value=2000, max_value=2100, value=default_end_year, key="end_year_input")
+            end_month = st.number_input("结束月份", min_value=1, max_value=12, value=default_end_month, key="end_month_input")
+            end_ym_val = f"{int(end_year):04d}-{int(end_month):02d}"
 
-query_clicked = st.button("🔍 查询", type="primary", use_container_width=True)
+    query_clicked = st.form_submit_button("🔍 查询", type="primary", use_container_width=True)
 
-if query_clicked or ("yearly_summary_result" in st.session_state):
     if query_clicked:
+        for k in ["current_summary_result", "current_query_mode", "current_year_val", "current_start_ym", "current_end_ym"]:
+            st.session_state.pop(k, None)
+
+        if mode == "指定月份区间" and start_ym_val > end_ym_val:
+            st.error(f"❌ 起始月份 {start_ym_val} 不能晚于结束月份 {end_ym_val}，请调整后重新查询。")
+            st.stop()
+
         if mode == "完整年份":
             result = get_yearly_summary_data(year=year_val)
         else:
-            if start_ym_val > end_ym_val:
-                st.error(f"❌ 起始月份 {start_ym_val} 不能晚于结束月份 {end_ym_val}，请调整后重新查询。")
-                st.session_state.pop("yearly_summary_result", None)
-                st.stop()
             result = get_yearly_summary_data(start_ym=start_ym_val, end_ym=end_ym_val)
-        st.session_state["yearly_summary_result"] = result
+
+        if not result.get("success", False):
+            st.error(f"❌ {result.get('error', '查询失败')}")
+        else:
+            st.session_state["current_summary_result"] = result
+            st.session_state["current_query_mode"] = mode
+            st.session_state["current_year_val"] = year_val
+            st.session_state["current_start_ym"] = start_ym_val
+            st.session_state["current_end_ym"] = end_ym_val
+            st.rerun()
+
+has_result = st.session_state.get("current_summary_result") is not None
+
+if has_result:
+    result = st.session_state["current_summary_result"]
+    display_mode = st.session_state["current_query_mode"]
+    display_year = st.session_state["current_year_val"]
+    display_start = st.session_state["current_start_ym"]
+    display_end = st.session_state["current_end_ym"]
+
+    if mode == "完整年份":
+        current_input_params = {"mode": mode, "year": year_val}
+        queried_params = {"mode": display_mode, "year": display_year}
+        params_match = (mode == display_mode) and (year_val == display_year)
+        current_params_desc = f"{mode} {year_val}"
+        queried_params_desc = f"{display_mode} {display_year}"
     else:
-        result = st.session_state["yearly_summary_result"]
+        current_input_params = {"mode": mode, "start": start_ym_val, "end": end_ym_val}
+        queried_params = {"mode": display_mode, "start": display_start, "end": display_end}
+        params_match = (mode == display_mode) and (start_ym_val == display_start) and (end_ym_val == display_end)
+        current_params_desc = f"{mode} {start_ym_val} ~ {end_ym_val}"
+        queried_params_desc = f"{display_mode} {display_start} ~ {display_end}"
 
-    if not result.get("success", False):
-        st.error(f"❌ {result.get('error', '查询失败')}")
-        st.stop()
+    status_container = st.container()
+    with status_container:
+        if not params_match:
+            st.warning(
+                f"⚠️ **当前输入参数**：{current_params_desc}　|　"
+                f"**当前展示数据参数**：{queried_params_desc}　|　"
+                f"两者不一致，请点击「查询」按钮刷新数据。"
+            )
+        else:
+            st.success(f"✅ 查询成功：{result['start_ym']} 至 {result['end_ym']}，共 {len(result['months'])} 个月")
 
-    st.success(f"✅ 查询成功：{result['start_ym']} 至 {result['end_ym']}，共 {len(result['months'])} 个月")
+    if st.button("🗑️ 清除当前查询结果", use_container_width=False, key="clear_result_btn"):
+        for k in ["current_summary_result", "current_query_mode", "current_year_val", "current_start_ym", "current_end_ym"]:
+            st.session_state.pop(k, None)
+        st.rerun()
 
     if result["warning_messages"]:
         st.subheader("⚠️ 预算记录警告")
@@ -116,31 +166,33 @@ if query_clicked or ("yearly_summary_result" in st.session_state):
             st.success("🎉 查询范围内无超支月份，预算执行良好！")
 
     st.markdown("---")
-    st.subheader("📥 一键下载 CSV 文件")
+    st.subheader(f"📥 一键下载 CSV 文件（数据范围：{result['start_ym']} ~ {result['end_ym']}）")
 
     col1, col2 = st.columns(2)
     with col1:
         st.download_button(
-            label="📁 下载分类明细 CSV",
+            label=f"📁 下载分类明细 CSV",
             data=result["category_csv"].encode("utf-8-sig"),
             file_name="monthly_category_summary.csv",
             mime="text/csv",
             use_container_width=True,
-            help="包含每个月份各分类的实际支出与预算，列顺序与命令行工具导出完全一致"
+            help=f"查询参数：{queried_params_desc}，列顺序与命令行工具导出完全一致"
         )
     with col2:
         st.download_button(
-            label="📊 下载月度合计 CSV",
+            label=f"📊 下载月度合计 CSV",
             data=result["summary_csv"].encode("utf-8-sig"),
             file_name="monthly_total_summary.csv",
             mime="text/csv",
             use_container_width=True,
-            help="包含每个月份的总支出、总预算与执行率，列顺序与命令行工具导出完全一致"
+            help=f"查询参数：{queried_params_desc}，列顺序与命令行工具导出完全一致"
         )
 
-    st.markdown("### 📝 命令行验证说明")
-    if mode == "完整年份":
-        st.code(f"python yearly_summary.py --year {year_val} --format csv --db ./data/expenses.db --output-dir ./output", language="bash")
+    st.markdown(f"### 📝 命令行验证说明（基于查询参数：{queried_params_desc}）")
+    if display_mode == "完整年份":
+        st.code(f"python yearly_summary.py --year {display_year} --format csv --db ./data/expenses.db --output-dir ./output", language="bash")
     else:
-        st.code(f"python yearly_summary.py --start {start_ym_val} --end {end_ym_val} --format csv --db ./data/expenses.db --output-dir ./output", language="bash")
+        st.code(f"python yearly_summary.py --start {display_start} --end {display_end} --format csv --db ./data/expenses.db --output-dir ./output", language="bash")
     st.caption("使用上述命令可获得与页面上「一键下载」完全一致的 CSV 文件。")
+else:
+    st.info("👆 请在上方选择查询参数，然后点击「查询」按钮查看年度汇总数据。")
